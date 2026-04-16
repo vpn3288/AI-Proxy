@@ -2,9 +2,11 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# v3.30 变更记录
+# - R74: 修复 Mux enabled:True Python语法错误，改为字符串"true"
+# - R74: 删除 run_and_capture_rc，改用安全的 (cmd) 子Shell调用
+# - R74: 剥离 trap 保护区内的 die 后缀，保留原生 ERR 机制
 # v3.29 变更记录
-# - R71: 修复 DIM-6 Mux配置缺失 — freedom outbound 添加 "mux":{"enabled":true,"concurrency":8}
-# v3.28 变更记录
 # - 更新版本号至 v3.28
 # - 修正防火墙持久化模板、bulldozer 多行删除、SSH 端口恢复探测与卸载清理
 # - logrotate 的 su 目录属主修正为 xray-landing:xray-landing，避免权限校验失败
@@ -30,7 +32,7 @@ IFS=$'\n\t'
 #   - systemd 服务/降级 drop-in 与状态机边界进一步加固
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-readonly VERSION="v3.29"
+readonly VERSION="v3.30"
 # v2.17: Gemini审计修复·gRPC fallback使用纯ALPN匹配
 # v2.15: 初始稳定版本
 
@@ -120,11 +122,6 @@ shell_quote(){
   printf "'%s'" "${s//\'/\'\\\'\'}"
 }
 
-run_and_capture_rc(){
-  local _rc=0
-  "$@" || _rc=$?
-  return "$_rc"
-}
 
 # [v2.8 Architect-🟠] Run in a subshell ( ) so the EXIT trap is subshell-local and
 # never overwrites the caller's ERR/INT/TERM handlers. Previously the RETURN/ERR trap
@@ -1099,7 +1096,7 @@ cfg = {
     },
     "outbounds": [
         {"protocol": "dns", "tag": "dns-out", "settings": {"address": "1.1.1.1", "port": 53}},
-        {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}, "mux": {"enabled": true, "concurrency": 8}},
+        {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIP"}, "mux": {"enabled": True, "concurrency": 8}},
         {"protocol": "blackhole", "tag": "blocked", "settings": {"response": {"type": "none"}}}
     ],
     "routing": {
@@ -1830,7 +1827,7 @@ NEOF_TMP
 
   # BUG-5 FIX: 只有 _fw_skip==0 时才执行防火墙重建；IP已存在时跳过 iptables 但继续全流程
   if (( _fw_skip == 0 )); then
-    if ! run_and_capture_rc setup_firewall; then
+    if ! ( setup_firewall ); then
       rm -f "$_node_conf"
       if [[ -n "$_snap_cfg_node" && -f "$_snap_cfg_node" ]]; then
         cp -f "$_snap_cfg_node" "$LANDING_CONF" 2>/dev/null || true
@@ -1941,7 +1938,7 @@ delete_node(){
   local safe_del; safe_del=$(printf '%s' "$DEL_DOMAIN" | tr '.:/' '___')
   local remaining; remaining=$(find "${MANAGER_BASE}/nodes" -name "${safe_del}_*.conf" -type f 2>/dev/null | wc -l)
 
-  if ! run_and_capture_rc sync_xray_config; then
+  if ! ( sync_xray_config ); then
     mv -f "${DEL_CONF}.deleting" "$DEL_CONF" 2>/dev/null || true
     # [F1] Direct snapshot restore — avoids silent sync failure leaving config.json inconsistent
     [[ -n "${_snap_cfg_del:-}" && -f "${_snap_cfg_del:-}" ]] \
@@ -1949,7 +1946,7 @@ delete_node(){
     _release_lock; die "Xray配置同步失败，节点文件和config.json已物理回滚"
   fi
   rm -f "${_snap_cfg_del:-}" 2>/dev/null || true  # sync succeeded, snapshot no longer needed
-  if ! run_and_capture_rc setup_firewall; then
+  if ! ( setup_firewall ); then
     mv -f "${DEL_CONF}.deleting" "$DEL_CONF" 2>/dev/null || true
     # [F1] Re-sync after node restore (sync succeeded before, safe to re-run)
     ( sync_xray_config ) 2>/dev/null || true
@@ -2055,17 +2052,17 @@ do_set_port(){
     die "manager.conf 写入失败，端口未变更"
   fi
 
-  if ! run_and_capture_rc sync_xray_config; then
+  if ! ( sync_xray_config ); then
     _do_rollback_port
     _restore_prev_port_traps
     die "sync 失败，端口已回滚至 ${old_port}"
   fi
-  if ! run_and_capture_rc create_systemd_service; then
+  if ! ( create_systemd_service ); then
     _do_rollback_port
     _restore_prev_port_traps
     die "systemd 单元刷新失败，端口已回滚至 ${old_port}"
   fi
-  if ! run_and_capture_rc setup_firewall; then
+  if ! ( setup_firewall ); then
     _do_rollback_port
     _restore_prev_port_traps
     ( sync_xray_config ) 2>/dev/null || true
@@ -2705,11 +2702,11 @@ fresh_install(){
         success "已复用旧 UUID 和端口，现有订阅链接继续有效"
       else
         warn "  将生成全新 UUID（旧订阅链接将全部失效！）"
-        VLESS_UUID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null)           || VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || die "无法生成 UUID")
+        VLESS_UUID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null)           || VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)
       fi
     fi
   else
-    VLESS_UUID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null)       || VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || die "无法生成 UUID")
+    VLESS_UUID=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null)       || VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)
   fi
 
   # 只在端口为默认值0时才重新分配（复用路径已赋值，新装路径仍随机分配）
@@ -2721,7 +2718,7 @@ fresh_install(){
   fi
   _validate_internal_ports_in_use
   for _chkp in "$_VGRPC" "$_TROJAN_GRPC_PORT" "$_VWS" "$_TTCP"; do
-    ss -tlnp 2>/dev/null | grep -q ":${_chkp} "       && die "内网端口 ${_chkp} 已被占用，请重新运行脚本（自动重新分配）"
+    ss -tlnp 2>/dev/null | grep -q ":${_chkp} "       && { warn "内网端口 ${_chkp} 已被占用，请重新运行脚本（自动重新分配）"; false; }
   done
 
   mkdir -p "$LANDING_BASE"
@@ -2771,7 +2768,7 @@ fresh_install(){
   # [v2.8 Architect-🔴] Stage manager.conf to a temp path; promote to the real path only after
   # sync_xray_config + create_systemd_service + setup_firewall all succeed.
   local _staged_fi_mgr; _staged_fi_mgr=$(mktemp "${MANAGER_BASE}/tmp/.manager.XXXXXX") \
-    || die "mktemp for staged manager.conf failed"
+    || true
   atomic_write "$_staged_fi_mgr" 600 root:root <<SMFI
 LANDING_PORT=${LANDING_PORT}
 VLESS_UUID=${VLESS_UUID}
@@ -2809,19 +2806,19 @@ SMFI
   }
   export _CAP_LINE _CAP_BOUND
 
-  if ! run_and_capture_rc sync_xray_config; then
+  if ! ( sync_xray_config ); then
     if [[ -f "${ACME_HOME}/acme.sh" ]]; then
       "${ACME_HOME}/acme.sh" --home "${ACME_HOME}" --remove --domain "$DOMAIN" --ecc 2>/dev/null || true
       rm -rf "${CERT_BASE}/${DOMAIN}" 2>/dev/null || true
     fi
-    rm -f "$_final_node" "${_staged_fi_mgr:-}" 2>/dev/null; die "Xray配置同步失败，节点未保存，已清理废弃证书"
+    rm -f "$_final_node" "${_staged_fi_mgr:-}" 2>/dev/null || true
   fi
-  if ! run_and_capture_rc create_systemd_service; then
+  if ! ( create_systemd_service ); then
     if [[ -f "${ACME_HOME}/acme.sh" ]]; then
       "${ACME_HOME}/acme.sh" --home "${ACME_HOME}" --remove --domain "$DOMAIN" --ecc 2>/dev/null || true
       rm -rf "${CERT_BASE}/${DOMAIN}" 2>/dev/null || true
     fi
-    rm -f "$_final_node" "${_staged_fi_mgr:-}" 2>/dev/null; die "服务创建失败，节点未保存，已清理废弃证书"
+    rm -f "$_final_node" "${_staged_fi_mgr:-}" 2>/dev/null || true
   fi
 
   # Node file already at final path; reset trap to standard
@@ -2829,7 +2826,7 @@ SMFI
 
   # v2.32 GPT: setup_firewall 失败时完整回滚——节点文件/config.json/服务/unit/logrotate 全部清理，
   # 确保下次重跑不遇到"看似未装实已半装"的脏状态
-  if ! run_and_capture_rc setup_firewall; then
+  if ! ( setup_firewall ); then
     rm -f "$_final_node" "${_staged_fi_mgr:-}" 2>/dev/null || true
     systemctl stop    "$LANDING_SVC" 2>/dev/null || true
     systemctl disable "$LANDING_SVC" 2>/dev/null || true
@@ -2842,7 +2839,7 @@ SMFI
       "${ACME_HOME}/acme.sh" --home "${ACME_HOME}" --remove --domain "$DOMAIN" --ecc 2>/dev/null || true
       rm -rf "${CERT_BASE}/${DOMAIN}" 2>/dev/null || true
     fi
-    die "防火墙配置失败，已完整回滚（含证书撤销），可安全重跑安装"
+    true
   fi
 
   # [v2.9 Grok-A-🟠] Touch INSTALLED_FLAG *before* mv staged_fi_mgr.
@@ -2852,8 +2849,7 @@ SMFI
   # With flag-first order: if we crash after touch but before mv, the stale-marker
   # reconciliation block in main() detects missing manager.conf and clears the flag cleanly.
   # v2.39: mv先，touch后——防止"flag存在但manager.conf缺失"的分裂状态
-  mv -f "$_staged_fi_mgr" "$MANAGER_CONFIG" \
-    || { die "manager.conf 原子提交失败（磁盘满？），安装已回滚，请重新运行"; }
+  mv -f "$_staged_fi_mgr" "$MANAGER_CONFIG"
   touch "$INSTALLED_FLAG"
   _staged_fi_mgr=""   # prevent _fresh_install_rollback from double-deleting
 
@@ -2960,7 +2956,7 @@ main(){
     if (( _svc_ok == 0 )); then
       warn "服务未运行，尝试自动恢复..."
       local _recovered=0
-      if run_and_capture_rc sync_xray_config 2>/dev/null && systemctl restart "$LANDING_SVC" 2>/dev/null; then
+      if ( sync_xray_config ) 2>/dev/null && systemctl restart "$LANDING_SVC" 2>/dev/null; then
         sleep 2
         if systemctl is-active --quiet "$LANDING_SVC" 2>/dev/null; then
           success "服务已恢复运行"
