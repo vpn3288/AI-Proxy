@@ -153,7 +153,8 @@ detect_ssh_port(){
     if [[ "${detect_ssh_port_override:-}" =~ ^[0-9]+$ ]] && (( detect_ssh_port_override >= 1 && detect_ssh_port_override <= 65535 )); then
       p="$detect_ssh_port_override"
     else
-      echo -e "${RED}[FATAL]${NC} 无法探测 SSH 端口（sshd -T、ss、sshd_config 均失败）。"       "请以 detect_ssh_port_override=<端口> 环境变量指定后重试。" >&2
+      echo -e "${RED}[FATAL]${NC} 无法探测 SSH 端口（sshd -T、ss、sshd_config 均失败）。" \
+      "请以 detect_ssh_port_override=<端口> 环境变量指定后重试。" >&2
       exit 1
     fi
   fi
