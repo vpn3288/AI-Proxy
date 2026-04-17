@@ -1224,40 +1224,28 @@ generate_nodes(){
     echo -e "  中转机 IP: ${transit_ip}  (客户端连接此 IP)"
     echo ""
 
-    local sub_b64="" _sub_err=""
-    # Pass 5 values via stdin, Python reads them without argv injection risk
-    sub_b64=$(printf '%s\n' "$transit_ip" "$dom" "$uuid" "$pwd" "$pfx" | python3 <<'PY' 2>&1) \
-    || { _sub_err="$sub_b64"; sub_b64=""; }
+    local sub_b64="" _sub_err="" _tmp=""
+    _tmp=$(mktemp) || return 1
+    printf '%s\n' "$transit_ip" "$dom" "$uuid" "$pwd" "$pfx" > "$_tmp"
+    sub_b64=$(python3 - "$_tmp" 2>&1) || { _sub_err="$sub_b64"; sub_b64=""; }
+    rm -f "$_tmp"
 
+    python3 - "$_tmp" >/dev/null 2>&1 <<'PYGEN'
 import base64, urllib.parse, sys
-lines = [l.strip() for l in sys.stdin.read().split('\n') if l.strip()]
+lines = [l.strip() for l in open(sys.argv[1]).read().split('\n') if l.strip()]
 if len(lines) < 5:
     raise SystemExit(1)
-transit_ip, domain, vless_uuid, trojan_pass, pfx = lines[0], lines[1], lines[2], lines[3], lines[4]
+ip, domain, vu, tp, pfx = lines[0], lines[1], lines[2], lines[3], lines[4]
 port = 443
-lbl_vision = '[禁Mux]VLESS-Vision-'
-lbl_vgrpc  = 'VLESS-gRPC-'
-lbl_vws    = 'VLESS-WS-'
-lbl_ttcp   = 'Trojan-TCP-'
+lbl = {'v': '[禁Mux]VLESS-Vision-', 'g': 'VLESS-gRPC-', 'w': 'VLESS-WS-', 't': 'Trojan-TCP-'}
 uris = [
-    (f'vless://{vless_uuid}@{transit_ip}:{port}'
-     f'?encryption=none&flow=xtls-rprx-vision&security=tls'
-     f'&sni={domain}&fp=chrome&type=tcp&mux=0'
-     f'#{urllib.parse.quote(lbl_vision+domain)}'),
-    (f'vless://{vless_uuid}@{transit_ip}:{port}'
-     f'?encryption=none&security=tls&sni={domain}&fp=edge'
-     f'&type=grpc&serviceName={pfx}-vg&alpn=h2&mode=multi'
-     f'#{urllib.parse.quote(lbl_vgrpc+domain)}'),
-    (f'vless://{vless_uuid}@{transit_ip}:{port}'
-     f'?encryption=none&security=tls&sni={domain}&fp=firefox'
-     f'&type=ws&path=%2F{pfx}-vw&host={domain}&alpn=http/1.1'
-     f'#{urllib.parse.quote(lbl_vws+domain)}'),
-    (f'trojan://{urllib.parse.quote(trojan_pass)}@{transit_ip}:{port}'
-     f'?security=tls&sni={domain}&fp=safari&type=tcp'
-     f'#{urllib.parse.quote(lbl_ttcp+domain)}'),
+    f'vless://{vu}@{ip}:{port}?encryption=none&flow=xtls-rprx-vision&security=tls&sni={domain}&fp=chrome&type=tcp&mux=0#{urllib.parse.quote(lbl["v"]+domain)}',
+    f'vless://{vu}@{ip}:{port}?encryption=none&security=tls&sni={domain}&fp=edge&type=grpc&serviceName={pfx}-vg&alpn=h2&mode=multi#{urllib.parse.quote(lbl["g"]+domain)}',
+    f'vless://{vu}@{ip}:{port}?encryption=none&security=tls&sni={domain}&fp=firefox&type=ws&path=%2F{pfx}-vw&host={domain}&alpn=http/1.1#{urllib.parse.quote(lbl["w"]+domain)}',
+    f'trojan://{urllib.parse.quote(tp)}@{ip}:{port}?security=tls&sni={domain}&fp=safari&type=tcp#{urllib.parse.quote(lbl["t"]+domain)}',
 ]
 print(base64.b64encode('\n'.join(uris).encode()).decode())
-PY
+PYGEN
 
     if [[ -n "$sub_b64" ]]; then
       echo -e "  ${BOLD}Base64 订阅（粘贴到客户端「添加订阅」）:${NC}"
