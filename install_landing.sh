@@ -724,13 +724,9 @@ if openssl x509 -checkend 86400 -noout -in "\${CERT_DIR}/fullchain.pem" 2>/dev/n
   if ! /bin/systemctl reload xray-landing.service 2>/dev/null; then
     # [v2.32 Fix] reload失败时尝试一次restart，再失败才退出
     logger -t acme-xray-landing "WARN: reload failed — attempting restart"
-    if ! /bin/systemctl restart xray-landing.service 2>/dev/null || { log_error "xray restart failed"; exit 1; }; then
-      _msg="FATAL: reload and restart both failed for xray-landing.service"
-      logger -t acme-xray-landing "\$_msg"
-      echo "\$(date '+%Y-%m-%d %H:%M:%S') \$_msg" >> /var/log/acme-xray-landing-renew.log || true
-      exit 1
+    if ! /bin/systemctl restart xray-landing.service 2>/dev/null; then
+        error "xray restart failed — reload also failed earlier"; _msg="FATAL: reload and restart both failed for xray-landing.service"; logger -t acme-xray-landing "\$_msg"; echo "\$(date '+%Y-%m-%d %H:%M:%S') \$_msg" >> /var/log/acme-xray-landing-renew.log || true; exit 1
     fi
-  fi
 else
   # 证书校验失败：只记录告警，保留旧内存态等下次 cron 重试，绝不主动干预进程
   _msg="WARN: 证书续期后校验失败（\${CERT_DIR}），保留旧进程态，等待下次 cron 重试"
