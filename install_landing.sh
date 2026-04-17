@@ -607,8 +607,7 @@ StandardOutput=null
 StandardError=null
 SVCOV
   # [F4] Hard-fail: drop-in on disk but systemd runs stale graph if reload fails
-  systemctl daemon-reload || { log_error "daemon-reload failed"; exit 1; } \
-    || die "systemctl daemon-reload failed — drop-in limits will not apply (nginx may hit FD limit under load)"
+  systemctl daemon-reload || { log_error "daemon-reload failed"; exit 1; }
 }
 
 setup_fallback_decoy(){
@@ -2683,7 +2682,8 @@ fresh_install(){
   ss -tlnp 2>/dev/null | grep -q ":${LANDING_PORT} " && die "端口 ${LANDING_PORT} 已被占用（请先检查 nginx / xray* / mack-a*）"
 
   __LANDING_FRESH_INSTALL_TRAP_ACTIVE=1
-  trap '_fresh_install_rollback' INT TERM  optimize_kernel_network; create_system_user; install_xray_binary
+  trap '_fresh_install_rollback' ERR INT TERM
+  optimize_kernel_network; create_system_user; install_xray_binary
 
   local PUB_IP; PUB_IP=$(get_public_ip)
 
