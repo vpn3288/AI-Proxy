@@ -4,6 +4,8 @@ IFS=$'\n\t'
 # install_landing.sh — 落地机安装脚本 v1.0
 # 架构：Xray-core Trojan-TLS + acme.sh Let's Encrypt ECDSA + DoH 出站
 # 特性：幂等安装 | 原子化配置写入 | 三状态一致性验证 | 完整卸载
+# v3.68: AI-Proxy — [FEATURE] 可选组件独立安装：Tailscale、1Panel、OpenClaw可单独选择
+# v3.67: AI-Proxy — [CRITICAL FIX] Nginx Fallback返回真实博客页面，完美伪装成个人技术博客
 # v3.66: AI-Proxy — [CLEANUP] Remove mack-a compatibility code | Simplified architecture
 # v3.65: AI-Proxy — [NEW] 1Panel + Tailscale integration | Optional OpenClaw deployment
 # v3.62: HermesAgent cycle 5 — [R11] DNS wait trap | [R12] CERT_DIR validation | [R13] empty content check | [R14] dup IP warn | [R15] ControlGroups | [R17] password consistency | [R18] cert mon del verify | [R19] port conflict | [R20] UUID fallback | [R21] CF Zone ID
@@ -120,7 +122,12 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 # - 修复 acme.sh 首次安装下载/执行缺失，恢复证书申请链路
 # - 将 INPUT 链清理改为行号删除，避免 save/restore 重放旧规则
 # - 修正 nginx worker_connections 注释覆盖逻辑，防止升级标签堆叠
-readonly VERSION="v3.65"
+# 版本历史 v3.68:
+# - [FEATURE] 可选组件独立安装：Tailscale、1Panel、OpenClaw 可单独选择
+# - 添加 install_openclaw() 函数，支持 Docker 一键安装
+# - 重写 post_install_optional_components()，提供菜单式选择（1-5）
+# - 用户可选择：单独安装、全部安装、或跳过
+readonly VERSION="v3.68"
 # install_landing.sh — 落地机安装脚本 v1.0
 
 info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -507,7 +514,7 @@ validate_password(){
   # [ENHANCED v3.64] 放宽密码验证：允许常见特殊字符，但排除可能导致注入的字符
   # 允许：字母、数字、常见特殊字符（!@#$%^&*()_+=[]{};:,.<>?/-）
   # 不允许：引号、反斜杠、空格、管道符、分号、美元符号（防止命令注入）
-  if [[ ! "$p" =~ ^[a-zA-Z0-9!@#%^\&*()_+=\[\]{};:,.\<\>?/-]+$ ]]; then
+  if [[ ! "$p" =~ ^[a-zA-Z0-9!@#%^'&'*()_+=\[\]{}:,.?/-]+$ ]]; then
     die "密码包含非法字符（不允许：引号、反斜杠、空格、管道符、美元符号）"
   fi
 }
@@ -844,13 +851,12 @@ setup_fallback_decoy(){
   fi
   _tune_nginx_worker_connections
   local need_ipv6=0; have_ipv6 && need_ipv6=1
-  # [ENHANCED v3.63] 🎭 隐蔽性增强：Nginx Fallback 模拟真实网站行为
-  # 返回 403/robots.txt/favicon.ico 而不是 444，避免被识别为代理特征
+  # [ENHANCED v3.67] 🎭 隐蔽性增强：Nginx Fallback 返回真实博客页面
+  # 不再返回403，而是返回完整的HTML博客页面，完美伪装成真实网站
   if (( need_ipv6 )); then
     atomic_write "$fallback_conf" 644 root:root <<'FDEOF'
 # xray-landing-fallback.conf — 防探针回落站，由脚本管理，请勿手动修改
-# [v3.63 STEALTH] 模拟真实网站行为：返回 403/robots.txt/favicon.ico
-# 避免 return 444 的代理特征，提升隐蔽性
+# [v3.67 STEALTH] 返回真实博客页面，完美伪装成个人技术博客
 limit_conn_zone $binary_remote_addr zone=fallback_conn:10m;
 limit_req_zone  $binary_remote_addr zone=fallback_req:10m rate=10r/s;
 server {
@@ -864,21 +870,26 @@ server {
     limit_conn fallback_conn 4;
     limit_req  zone=fallback_req burst=50 nodelay;
     
-    # 模拟真实网站：返回 403 而不是 444
+    # 返回真实博客页面（HTML+CSS）
     location / {
-        return 403 "Access Denied";
-        add_header Content-Type text/plain;
+        default_type text/html;
+        return 200 '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tech Blog - Under Construction</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;line-height:1.6;color:#333;background:#f5f5f5}.container{max-width:800px;margin:0 auto;padding:40px 20px}header{background:#fff;padding:30px;margin-bottom:30px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}h1{font-size:2em;margin-bottom:10px;color:#2c3e50}h2{font-size:1.5em;margin:20px 0 10px;color:#34495e}.subtitle{color:#7f8c8d;font-size:1.1em}main{background:#fff;padding:30px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}.post{margin-bottom:30px;padding-bottom:30px;border-bottom:1px solid #eee}.post:last-child{border-bottom:none}.post-title{color:#3498db;text-decoration:none;font-size:1.3em;font-weight:600}.post-title:hover{color:#2980b9}.post-meta{color:#95a5a6;font-size:.9em;margin:5px 0}.post-excerpt{color:#555;margin-top:10px}footer{text-align:center;margin-top:40px;padding:20px;color:#7f8c8d;font-size:.9em}</style></head><body><div class="container"><header><h1>Tech Blog</h1><p class="subtitle">Exploring Technology, Code, and Innovation</p></header><main><h2>Recent Posts</h2><article class="post"><a href="#" class="post-title">Building Scalable Microservices with Docker</a><div class="post-meta">Posted on March 15, 2024 | 5 min read</div><p class="post-excerpt">Learn how to design and deploy microservices architecture using Docker containers and Kubernetes orchestration...</p></article><article class="post"><a href="#" class="post-title">Understanding Modern Web Security</a><div class="post-meta">Posted on March 10, 2024 | 8 min read</div><p class="post-excerpt">A comprehensive guide to web security best practices, including HTTPS, CSP, and secure authentication...</p></article><article class="post"><a href="#" class="post-title">Getting Started with Cloud Infrastructure</a><div class="post-meta">Posted on March 5, 2024 | 6 min read</div><p class="post-excerpt">Explore the fundamentals of cloud computing and learn how to deploy your first application on AWS...</p></article></main><footer><p>&copy; 2024 Tech Blog. All rights reserved.</p></footer></div></body></html>';
     }
     
     # 模拟 robots.txt（常见爬虫探测目标）
     location = /robots.txt {
-        return 200 "User-agent: *\nDisallow: /\n";
+        return 200 "User-agent: *\nDisallow: /admin/\nDisallow: /private/\nAllow: /\n";
         add_header Content-Type text/plain;
     }
     
     # 模拟 favicon.ico（浏览器自动请求）
     location = /favicon.ico {
         return 204;
+    }
+    
+    # 模拟常见静态资源路径
+    location ~* \.(css|js|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        return 404;
     }
     
     access_log off;
@@ -888,8 +899,7 @@ FDEOF
   else
     atomic_write "$fallback_conf" 644 root:root <<'FDEOF'
 # xray-landing-fallback.conf — 防探针回落站，由脚本管理，请勿手动修改
-# [v3.63 STEALTH] 模拟真实网站行为：返回 403/robots.txt/favicon.ico
-# 避免 return 444 的代理特征，提升隐蔽性
+# [v3.67 STEALTH] 返回真实博客页面，完美伪装成个人技术博客
 limit_conn_zone $binary_remote_addr zone=fallback_conn:10m;
 limit_req_zone  $binary_remote_addr zone=fallback_req:10m rate=10r/s;
 server {
@@ -901,21 +911,26 @@ server {
     limit_conn fallback_conn 4;
     limit_req  zone=fallback_req burst=50 nodelay;
     
-    # 模拟真实网站：返回 403 而不是 444
+    # 返回真实博客页面（HTML+CSS）
     location / {
-        return 403 "Access Denied";
-        add_header Content-Type text/plain;
+        default_type text/html;
+        return 200 '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Tech Blog - Under Construction</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;line-height:1.6;color:#333;background:#f5f5f5}.container{max-width:800px;margin:0 auto;padding:40px 20px}header{background:#fff;padding:30px;margin-bottom:30px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}h1{font-size:2em;margin-bottom:10px;color:#2c3e50}h2{font-size:1.5em;margin:20px 0 10px;color:#34495e}.subtitle{color:#7f8c8d;font-size:1.1em}main{background:#fff;padding:30px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.1)}.post{margin-bottom:30px;padding-bottom:30px;border-bottom:1px solid #eee}.post:last-child{border-bottom:none}.post-title{color:#3498db;text-decoration:none;font-size:1.3em;font-weight:600}.post-title:hover{color:#2980b9}.post-meta{color:#95a5a6;font-size:.9em;margin:5px 0}.post-excerpt{color:#555;margin-top:10px}footer{text-align:center;margin-top:40px;padding:20px;color:#7f8c8d;font-size:.9em}</style></head><body><div class="container"><header><h1>Tech Blog</h1><p class="subtitle">Exploring Technology, Code, and Innovation</p></header><main><h2>Recent Posts</h2><article class="post"><a href="#" class="post-title">Building Scalable Microservices with Docker</a><div class="post-meta">Posted on March 15, 2024 | 5 min read</div><p class="post-excerpt">Learn how to design and deploy microservices architecture using Docker containers and Kubernetes orchestration...</p></article><article class="post"><a href="#" class="post-title">Understanding Modern Web Security</a><div class="post-meta">Posted on March 10, 2024 | 8 min read</div><p class="post-excerpt">A comprehensive guide to web security best practices, including HTTPS, CSP, and secure authentication...</p></article><article class="post"><a href="#" class="post-title">Getting Started with Cloud Infrastructure</a><div class="post-meta">Posted on March 5, 2024 | 6 min read</div><p class="post-excerpt">Explore the fundamentals of cloud computing and learn how to deploy your first application on AWS...</p></article></main><footer><p>&copy; 2024 Tech Blog. All rights reserved.</p></footer></div></body></html>';
     }
     
     # 模拟 robots.txt（常见爬虫探测目标）
     location = /robots.txt {
-        return 200 "User-agent: *\nDisallow: /\n";
+        return 200 "User-agent: *\nDisallow: /admin/\nDisallow: /private/\nAllow: /\n";
         add_header Content-Type text/plain;
     }
     
     # 模拟 favicon.ico（浏览器自动请求）
     location = /favicon.ico {
         return 204;
+    }
+    
+    # 模拟常见静态资源路径
+    location ~* \.(css|js|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        return 404;
     }
     
     access_log off;
@@ -933,7 +948,7 @@ FDEOF
     systemctl is-enabled --quiet nginx       || die "nginx is-enabled check failed"
     systemctl start nginx || die "Nginx 启动失败"
   fi
-  success "fallback 防探针站已就绪（已启用真实网站模拟）"
+  success "fallback 防探针站已就绪（伪装成真实技术博客）"
 }
 
 _write_cert_reload_script(){
@@ -3165,6 +3180,81 @@ configure_1panel_tailscale() {
   return 0
 }
 
+install_openclaw() {
+  echo ""
+  echo -e "${BOLD}${CYAN}══ 安装 OpenClaw AI 助手 ══${NC}"
+  
+  # Check if Docker is installed
+  if ! command -v docker &>/dev/null; then
+    warn "Docker 未安装，正在安装 Docker..."
+    if ! curl -fsSL https://get.docker.com | sh; then
+      error "Docker 安装失败"
+      return 1
+    fi
+    systemctl enable docker
+    systemctl start docker
+    success "Docker 安装完成"
+  fi
+  
+  echo ""
+  echo -e "${BOLD}${YELLOW}OpenClaw 安装方式：${NC}"
+  echo ""
+  echo "${BOLD}方式 1: 通过 1Panel 应用商店安装（推荐）${NC}"
+  echo "  1. 访问 1Panel Web 界面"
+  echo "  2. 进入应用商店"
+  echo "  3. 搜索 OpenClaw"
+  echo "  4. 一键安装"
+  echo ""
+  echo "${BOLD}方式 2: Docker 命令安装${NC}"
+  echo "  运行以下命令："
+  echo "  ${CYAN}docker run -d \\"
+  echo "    --name openclaw \\"
+  echo "    --restart unless-stopped \\"
+  echo "    -v ~/.openclaw:/home/node/.openclaw \\"
+  echo "    -p 3000:3000 \\"
+  echo "    ghcr.io/openclaw/openclaw:latest${NC}"
+  echo ""
+  echo "${BOLD}方式 3: 官方安装脚本${NC}"
+  echo "  访问: ${CYAN}https://docs.openclaw.ai/getting-started${NC}"
+  echo ""
+  
+  read -p "是否现在通过 Docker 安装 OpenClaw？[y/N]: " install_now
+  
+  if [[ ! "$install_now" =~ ^[Yy]$ ]]; then
+    info "跳过 OpenClaw 安装"
+    return 0
+  fi
+  
+  # Install OpenClaw via Docker
+  info "正在安装 OpenClaw..."
+  if docker run -d \
+    --name openclaw \
+    --restart unless-stopped \
+    -v ~/.openclaw:/home/node/.openclaw \
+    -p 3000:3000 \
+    ghcr.io/openclaw/openclaw:latest; then
+    success "OpenClaw 安装完成"
+    echo ""
+    echo -e "${BOLD}${GREEN}访问 OpenClaw：${NC}"
+    echo "  本地: ${CYAN}http://localhost:3000${NC}"
+    local ts_ip
+    ts_ip=$(cat /tmp/tailscale_ip.txt 2>/dev/null)
+    if [[ -n "$ts_ip" ]]; then
+      echo "  Tailscale: ${CYAN}http://${ts_ip}:3000${NC}"
+    fi
+    echo ""
+    echo -e "${BOLD}${YELLOW}配置 Telegram Bot：${NC}"
+    echo "  1. 访问 @BotFather 创建 Bot"
+    echo "  2. 在 OpenClaw 设置中配置 Bot Token"
+    echo "  3. 通过 Telegram 管理落地机"
+    echo ""
+    return 0
+  else
+    error "OpenClaw 安装失败"
+    return 1
+  fi
+}
+
 post_install_optional_components() {
   local headless="${1:-0}"
   
@@ -3180,84 +3270,105 @@ post_install_optional_components() {
   echo ""
   echo "落地机已成功安装！现在可以安装可选组件："
   echo ""
-  echo "  ${BOLD}1Panel + Tailscale${NC}"
-  echo "    - 1Panel: Web 管理面板（Docker、文件、监控）"
-  echo "    - Tailscale: 安全内网访问（不开放公网端口）"
-  echo "    - OpenClaw: AI 助手（通过 1Panel 应用商店安装）"
-  echo ""
-  echo "  ${BOLD}优势：${NC}"
-  echo "    ✓ 通过 Tailscale 安全访问 1Panel（不开放公网端口）"
-  echo "    ✓ 在 1Panel 应用商店一键安装 OpenClaw"
-  echo "    ✓ 通过 Telegram 管理落地机"
-  echo "    ✓ Web 界面管理 Docker 容器"
+  echo "  ${BOLD}1. Tailscale${NC} - 安全内网访问（~50MB 内存）"
+  echo "  ${BOLD}2. 1Panel${NC} - Web 管理面板（~300MB 内存）"
+  echo "  ${BOLD}3. OpenClaw${NC} - AI 助手（~300MB 内存）"
+  echo "  ${BOLD}4. 全部安装${NC} - Tailscale + 1Panel + OpenClaw"
+  echo "  ${BOLD}5. 跳过${NC} - 不安装任何可选组件"
   echo ""
   echo "  ${BOLD}资源占用：${NC}"
-  echo "    - Tailscale: ~50MB 内存"
-  echo "    - 1Panel: ~300MB 内存"
-  echo "    - OpenClaw: ~300MB 内存（可选）"
-  echo "    - 总计: ~350-650MB（6GB 内存完全够用）"
+  echo "    - 单独安装: 50-300MB 内存"
+  echo "    - 全部安装: ~650MB 内存（6GB 内存完全够用）"
   echo ""
   
-  read -p "是否安装 1Panel + Tailscale？[y/N]: " install_optional
+  read -p "请选择 [1-5]: " choice
   
-  if [[ ! "$install_optional" =~ ^[Yy]$ ]]; then
-    info "跳过可选组件安装"
-    echo ""
-    echo -e "${BOLD}${GREEN}提示：${NC}如需后续安装，请运行："
-    echo "  ${CYAN}curl -sSL https://tailscale.com/install.sh | sh${NC}"
-    echo "  ${CYAN}curl -sSL https://resource.1panel.pro/v2/quick_start.sh | bash${NC}"
-    return 0
-  fi
-  
-  # Install Tailscale
-  if ! install_tailscale; then
-    error "Tailscale 安装失败，跳过 1Panel 安装"
-    return 1
-  fi
-  
-  # Install 1Panel
-  if ! install_1panel; then
-    error "1Panel 安装失败"
-    return 1
-  fi
-  
-  # Configure 1Panel to listen on Tailscale IP
-  configure_1panel_tailscale
-  
-  # Print final instructions
-  echo ""
-  echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════════════════════${NC}"
-  echo -e "${BOLD}${GREEN}  安装完成！${NC}"
-  echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "${BOLD}下一步：${NC}"
-  echo ""
-  echo "1. ${BOLD}在本地设备安装 Tailscale 客户端${NC}"
-  echo "   - Windows/Mac: https://tailscale.com/download"
-  echo "   - iOS/Android: 应用商店搜索 Tailscale"
-  echo ""
-  echo "2. ${BOLD}登录同一个 Tailscale 账号${NC}"
-  echo ""
-  echo "3. ${BOLD}访问 1Panel${NC}"
-  local ts_ip
-  ts_ip=$(cat /tmp/tailscale_ip.txt 2>/dev/null)
-  if [[ -n "$ts_ip" ]]; then
-    local panel_port
-    panel_port=$(1pctl user-info 2>/dev/null | grep -oP '(?<=:)\d+(?=/)' || echo "")
-    if [[ -n "$panel_port" ]]; then
-      echo "   访问地址: ${CYAN}http://${ts_ip}:${panel_port}${NC}"
-    fi
-  fi
-  echo "   查看访问信息: ${CYAN}1pctl user-info${NC}"
-  echo ""
-  echo "4. ${BOLD}在 1Panel 应用商店安装 OpenClaw${NC}"
-  echo "   - 打开 1Panel → 应用商店 → 搜索 OpenClaw → 安装"
-  echo "   - 配置 Telegram Bot Token"
-  echo ""
-  echo "5. ${BOLD}通过 Telegram 管理落地机${NC}"
-  echo "   - 发送命令到 Telegram Bot"
-  echo "   - 查看日志、重启服务等"
-  echo ""
+  case "$choice" in
+    1)
+      # Install Tailscale only
+      if install_tailscale; then
+        success "Tailscale 安装完成"
+      else
+        error "Tailscale 安装失败"
+      fi
+      ;;
+    2)
+      # Install 1Panel only
+      if install_1panel; then
+        success "1Panel 安装完成"
+        echo ""
+        echo -e "${BOLD}${GREEN}提示：${NC}运行以下命令查看访问信息："
+        echo "  ${CYAN}1pctl user-info${NC}"
+      else
+        error "1Panel 安装失败"
+      fi
+      ;;
+    3)
+      # Install OpenClaw only
+      install_openclaw
+      ;;
+    4)
+      # Install all
+      echo ""
+      info "开始安装所有组件..."
+      
+      # Install Tailscale
+      if ! install_tailscale; then
+        error "Tailscale 安装失败，继续安装其他组件"
+      fi
+      
+      # Install 1Panel
+      if ! install_1panel; then
+        error "1Panel 安装失败，继续安装其他组件"
+      fi
+      
+      # Configure 1Panel with Tailscale if both installed
+      if command -v tailscale &>/dev/null && command -v 1pctl &>/dev/null; then
+        configure_1panel_tailscale
+      fi
+      
+      # Install OpenClaw
+      install_openclaw
+      
+      # Print final instructions
+      echo ""
+      echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════════════════════${NC}"
+      echo -e "${BOLD}${GREEN}  所有组件安装完成！${NC}"
+      echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════════════════════${NC}"
+      echo ""
+      echo -e "${BOLD}下一步：${NC}"
+      echo ""
+      echo "1. ${BOLD}在本地设备安装 Tailscale 客户端${NC}"
+      echo "   - Windows/Mac: https://tailscale.com/download"
+      echo "   - iOS/Android: 应用商店搜索 Tailscale"
+      echo ""
+      echo "2. ${BOLD}登录同一个 Tailscale 账号${NC}"
+      echo ""
+      echo "3. ${BOLD}访问管理界面${NC}"
+      local ts_ip
+      ts_ip=$(cat /tmp/tailscale_ip.txt 2>/dev/null)
+      if [[ -n "$ts_ip" ]]; then
+        local panel_port
+        panel_port=$(1pctl user-info 2>/dev/null | grep -oP '(?<=:)\d+(?=/)' || echo "")
+        if [[ -n "$panel_port" ]]; then
+          echo "   1Panel: ${CYAN}http://${ts_ip}:${panel_port}${NC}"
+        fi
+        echo "   OpenClaw: ${CYAN}http://${ts_ip}:3000${NC}"
+      fi
+      echo "   查看1Panel信息: ${CYAN}1pctl user-info${NC}"
+      echo ""
+      ;;
+    5|*)
+      # Skip or invalid choice
+      info "跳过可选组件安装"
+      echo ""
+      echo -e "${BOLD}${GREEN}提示：${NC}如需后续安装，请运行："
+      echo "  Tailscale: ${CYAN}curl -sSL https://tailscale.com/install.sh | sh${NC}"
+      echo "  1Panel: ${CYAN}curl -sSL https://resource.1panel.pro/v2/quick_start.sh | bash${NC}"
+      echo "  OpenClaw: ${CYAN}docker run -d --name openclaw -p 3000:3000 ghcr.io/openclaw/openclaw:latest${NC}"
+      echo ""
+      ;;
+  esac
   
   # Cleanup
   rm -f /tmp/tailscale_ip.txt 2>/dev/null
